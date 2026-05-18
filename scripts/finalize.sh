@@ -33,9 +33,25 @@ ffmpeg -hide_banner -i "$FINAL/dubbed_audio.wav" \
   -af "silencedetect=noise=-40dB:duration=0.1" -f null - 2>&1 \
   | grep -E "silence_(start|end)" > "$INTER/silence_log_final.txt" || true
 
-# 4. ffmpeg mux video stream + ko audio
+# 4. Mix KO dub with original EN audio dimmed -18dB (real-dub background pattern).
+# Listeners get original speaker's tone/emotion underneath the KO voiceover.
+# If original audio.mp3 missing, falls back to KO-only.
+EN_AUDIO="$BASE/1_source/audio.mp3"
+MIXED_AUDIO="$INTER/dubbed_audio_mixed.wav"
+if [ -f "$EN_AUDIO" ]; then
+  ffmpeg -y -hide_banner -loglevel error \
+    -i "$EN_AUDIO" -i "$FINAL/dubbed_audio.wav" \
+    -filter_complex "[0:a]aresample=44100,pan=mono|c0=0.5*c0+0.5*c1,volume=-24dB[en];[1:a]aresample=44100[ko];[en][ko]amix=inputs=2:duration=first:dropout_transition=0[mixed]" \
+    -map "[mixed]" "$MIXED_AUDIO"
+  AUDIO_FOR_MUX="$MIXED_AUDIO"
+  echo "[finalize] mixed KO dub with EN background at -24dB"
+else
+  AUDIO_FOR_MUX="$FINAL/dubbed_audio.wav"
+fi
+
+# 5. ffmpeg mux video stream + mixed audio
 ffmpeg -y -hide_banner -loglevel error \
-  -i "$SRC_VIDEO" -i "$FINAL/dubbed_audio.wav" \
+  -i "$SRC_VIDEO" -i "$AUDIO_FOR_MUX" \
   -map 0:v -map 1:a -c:v copy -c:a aac -shortest \
   "$FINAL/dubbed_video.mp4"
 echo "OK: $FINAL/dubbed_video.mp4"

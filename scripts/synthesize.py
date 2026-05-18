@@ -97,7 +97,11 @@ def main():
         voice = speakers.get(spk, {}).get("voice") if spk else None
         voice = voice or fallback_voice
         style = get_style(voice)
-        wav, dur = tts.synthesize(tts_text, voice_style=style, lang="ko")
+        # speed=1.0 instead of Supertonic default 1.05. Default-rushed KO sounds
+        # noticeably faster than the EN source speaker, and combined with KO's
+        # higher information density (filler-free, 0.36x char ratio vs EN), the
+        # result leaves long silences in dub timeline. 1.0 reads natural.
+        wav, dur = tts.synthesize(tts_text, voice_style=style, lang="ko", speed=1.0)
         out = out_dir / f"utt-{i:03d}.wav"
         tts.save_audio(wav, str(out))
         # Trim leading silence fully + keep 120ms trailing for natural breath.

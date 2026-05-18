@@ -13,10 +13,62 @@ YouTube URL을 붙여넣으면 `dubyduby`가 영상을 받아오고, 음성을 S
 ```bash
 git clone git@github.com:SihyunAdventure/dubyduby.git
 cd dubyduby
-bash scripts/setup.sh          # uv venv + supertonic + yt-dlp + Pretendard + ffmpeg 체크
+bash scripts/setup.sh          # uv venv + supertonic + librosa + pyannote.audio + yt-dlp + Pretendard + ffmpeg 체크
 cp .env.example .env           # SONIOX_API_KEY 입력
 bash scripts/dub.sh "https://www.youtube.com/watch?v=..."
 ```
+
+### 선택: pyannote 화자 분리 (강력 권장 — 동일 성별 인터뷰에서 큰 차이)
+
+기본은 피치 기반 분리(`analyze_speakers.py`)인데, 두 남성처럼 비슷한 톤은 잘못 섞일 수 있어요. [pyannote.audio](https://github.com/pyannote/pyannote-audio)를 쓰면 정확도가 산업 표준 수준으로 올라갑니다 (Soniox 50% 오류 → 5-10%).
+
+설정 (한 번만, 무료, 약 5분). **HuggingFace 처음이라면 1번부터, 이미 계정 있으면 2번부터**:
+
+#### 1. HuggingFace 가입 (계정 없으면)
+
+[huggingface.co/join](https://huggingface.co/join) → 이메일 + 비밀번호로 무료 가입. 가입 확인 이메일 클릭해서 인증.
+
+#### 2. Access Token 발급
+
+1. 로그인 상태에서 [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) 접속
+2. 우상단 **"New token"** 또는 **"Create new token"** 클릭
+3. **Token name**: 아무거나 (예: `dubyduby-pyannote`)
+4. **Token type**: **Read** 선택 (write 권한 불필요)
+5. **Create token** 클릭
+6. 생성된 `hf_xxxxxxx...` 토큰을 **즉시 복사** (한 번만 보임, 잃으면 새로 만들어야 함)
+
+#### 3. 세 모델 페이지에 접근 동의
+
+같은 HuggingFace 계정으로 로그인된 상태에서 각 페이지 접속 → "Agree and access repository" 클릭 (즉시 승인됨):
+
+1. [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)
+2. [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0)
+3. [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1)
+
+**양식 입력 가이드** (모델 1번에 한 번만 나타남):
+| 필드 | 입력 |
+|---|---|
+| Company/university | 회사명, 또는 개인이면 `Personal project` |
+| Website | 회사 사이트, GitHub 프로필, 또는 비워둠 |
+| Use case (있으면) | `Korean dubbing tool (open-source)` 같이 한 줄로 |
+
+> 💡 양식은 **연락처 수집용**일 뿐 라이센스와 무관. 모델 자체는 **MIT 라이센스** — 상업 사용 무료. 마케팅 이메일이 가끔 올 수 있어요.
+
+#### 4. 토큰을 로컬에 저장
+
+터미널에서 (`hf_xxx...`은 본인이 복사한 토큰으로 교체):
+
+```bash
+mkdir -p ~/.config/secrets && chmod 700 ~/.config/secrets
+echo "export HF_TOKEN='hf_xxx...'" > ~/.config/secrets/huggingface.env
+chmod 600 ~/.config/secrets/huggingface.env
+```
+
+#### 5. 끝 — `dub.sh` 다시 실행
+
+`dub.sh`가 자동으로 토큰 감지해서 pyannote 경로로 진행합니다. 토큰 없거나 모델 동의 안 했으면 피치 기반 fallback (단일 성별이거나 두 성별 인터뷰면 잘 동작).
+
+처음 dub 시 모델 weights (~수백 MB) 자동 다운로드, 이후엔 캐싱됨.
 
 `dub.sh`는 **2단계로 끊어서** 동작합니다. 중간에 에이전트가 끼어드는 구조예요.
 
@@ -34,19 +86,28 @@ bash scripts/dub.sh "https://www.youtube.com/watch?v=..."
 YouTube URL
   │
   ▼ yt-dlp                       1_source/{video.mp4, audio.mp3}
-  ▼ Soniox STT + 화자 분리        2_transcript/{tokens.json, transcript.md}
+  ▼ Soniox STT (+화자 분리)       2_transcript/{tokens.json, transcript.md}
+  ▼ pyannote.audio (선택)         정확한 화자 분리 (동일 성별도 정확)
+  ▼ analyze_speakers.py          성별 → 보이스 자동 매핑
   │
   ▼ ─── 일시 정지: 에이전트가 sentences.json 작성 ───
   │       (Claude Code, Codex, Cursor… AGENTS.md + glossary.json 참고)
   │
-  ▼ match_timing.py              3_translation/utterances.json
-  ▼ analyze_speakers.py          피치(f0) → 성별 → 보이스 자동 매핑
-  ▼ Supertonic ONNX              4_synth/utt-NNN.wav      (발화별 합성)
-  ▼ place_timeline.py            5_intermediate/dub_clean.wav
-  ▼ subtitle.py + ffmpeg libass  6_final/dubbed_video.mp4
+  ▼ match_timing.py              3_translation/utterances.json (text_en + sent_idx)
+  ▼ Supertonic ONNX              4_synth/utt-NNN.wav  (per-utt 합성, speed=1.0)
+  ▼ place_timeline.py            5_intermediate/dub_clean.wav  (반응형 무음 압축 + drift cap)
+  ▼ subtitle.py                  6_final/subtitles.ass (이중자막 + 화자 색상 + 자동 분할)
+  ▼ finalize.sh (mix + libass)   6_final/dubbed_video_subtitled.mp4
+                                   (KO dub + EN -24dB 배경 + H.265)
 ```
 
-발화마다 `atempo`를 1.0~1.6 범위로 따로 적용해서, 전체 타임라인을 늘이지 않고도 각 줄이 자기 자리에 맞도록 합니다.
+### 자막 + 음성 처리 디테일
+- **반응형 무음 압축** — 한국어가 영어보다 짧을 때 (filler 제거 + 정보 밀도) 발생하는 긴 무음을 발화별 자동 축소. 큰 무음은 60% 줄이고, 자연 호흡(150ms~)은 보존.
+- **Drift cap (±2초)** — 한국어 음성이 원본 영상 화자 입 모양과 ±2초 이상 어긋나지 않도록 hard cap. 시각 동기 유지.
+- **Per-utt atempo (1.0~1.6)** — 한국어 wav가 슬롯보다 길면 그것만 빠르게. 다른 발화는 자연 속도.
+- **이중 자막** — 한국어 (하단, 화자별 색상, 한국어 음성 timing 동기) + 영어 (상단 고정, 원본 화자 입 모양 timing 동기). 두 자막이 절대 겹치지 않게 분리.
+- **자동 자막 분할** — 한국어가 2줄 넘어가면 한 utterance의 자막을 두 시간대로 자동 분할 (정보 손실 X).
+- **EN 배경 오디오 mix (-24dB)** — 원본 화자 톤을 KO 더빙 뒤에 작게 깔아서 감정 전달 + 더빙 표준 패턴.
 
 ## 왜 에이전트 기반인가
 

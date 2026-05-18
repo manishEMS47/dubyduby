@@ -41,6 +41,46 @@ MARGIN_V = 80
 COLOR_TEXT = "&H00FFFFFF"
 COLOR_BOX = "&H80000000"
 
+# Per-voice subtitle colors (ASS BGR order: &HAABBGGRR).
+# Voice-based (not speaker-id-based) so speakers sharing the same voice
+# get the same color — handy when Soniox splits one person into two ids
+# (intro narration + dialogue) but they're assigned the same voice.
+# Sequence: white → warm yellow → cyan → magenta → mint. White is the
+# default for unknown voices.
+VOICE_COLOR_PALETTE = [
+    "&H0099EEFF",  # yellow  — first distinct voice (host/interviewer)
+    "&H00FFFFFF",  # white   — second distinct voice (guest/interviewee, the focus)
+    "&H00FFCC99",  # cyan    — third
+    "&H00FF99CC",  # magenta — fourth
+    "&H0099FFCC",  # mint    — fifth
+]
+DEFAULT_TEXT_COLOR = "&H00FFFFFF"
+
+
+def build_voice_color_map(speakers: dict) -> dict:
+    """Map speaker_id → color, where speakers sharing a voice share a color."""
+    voice_to_color = {}
+    palette_idx = 0
+    spk_to_color = {}
+    # iterate in stable order so the color of "first voice to appear" stays predictable
+    for spk in sorted(speakers.keys()):
+        voice = speakers[spk].get("voice")
+        if voice and voice not in voice_to_color:
+            voice_to_color[voice] = VOICE_COLOR_PALETTE[palette_idx % len(VOICE_COLOR_PALETTE)]
+            palette_idx += 1
+        spk_to_color[spk] = voice_to_color.get(voice, DEFAULT_TEXT_COLOR)
+    return spk_to_color
+
+# English secondary subtitle — fixed at top of frame so it never collides
+# with the KO subtitle box at the bottom (the two cues run on independent
+# timelines: EN follows source-video anchor, KO follows shifted dub timeline,
+# so they can be visible simultaneously).
+EN_FONT_SIZE = 32                   # ~60% of main
+EN_MAX_CHARS_PER_LINE = 60          # English fits more per line
+EN_FIXED_TOP_Y = 80                 # px from top of frame (fixed position)
+COLOR_EN_TEXT = "&H00DDDDDD"        # slightly dimmer white
+COLOR_EN_OUTLINE = "&HA0000000"     # semi-transparent black for readability
+
 FONT_PATH = Path(__file__).parent.parent / "fonts" / "Pretendard-Bold.ttf"
 _FONT = ImageFont.truetype(str(FONT_PATH), FONT_SIZE)
 _ASCENT, _DESCENT = _FONT.getmetrics()
@@ -88,9 +128,10 @@ def wrap_korean(text: str, max_per_line: int = MAX_CHARS_PER_LINE):
     if current:
         lines.append(" ".join(current))
 
-    # Coalesce overflow into last line if > MAX_LINES
-    if len(lines) > MAX_LINES:
-        lines = lines[:MAX_LINES - 1] + [" ".join(lines[MAX_LINES - 1:])]
+    # Note: NO truncation here anymore. Overflow handling moved to the
+    # caller — if total > MAX_LINES, the caller splits the cue into two
+    # consecutive time slots so all content stays visible. wrap_korean now
+    # just returns however many lines the text needs.
     return lines
 
 
@@ -229,6 +270,10 @@ def compute_audio_timing(utterances, base: Path, atempo: float = 1.0) -> list:
         p = by_idx.get(i)
         if not p:
             continue
+        # Attach the original English-speaker anchor time so the EN subtitle
+        # can stay synced with the source video (mouth movements), while the
+        # KO subtitle follows the actual dub playback after adaptive shift.
+        u["_anchor_start_ms"] = p.get("anchor_start_ms", p["start_ms"])
         out.append((u, p["start_ms"], p["end_ms"]))
 
     # Snap each cue start to nearest real voice onset detected on dub_final.wav.
@@ -247,7 +292,8 @@ def compute_audio_timing(utterances, base: Path, atempo: float = 1.0) -> list:
     return out
 
 
-def build_ass(timed_utts) -> str:
+def build_ass(timed_utts, spk_to_color: dict = None) -> str:
+    spk_to_color = spk_to_color or {}
     header = f"""[Script Info]
 Title: dubyduby
 ScriptType: v4.00+
@@ -260,32 +306,109 @@ ScaledBorderAndShadow: yes
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Text,{FONT_NAME},{FONT_SIZE},{COLOR_TEXT},{COLOR_TEXT},&H00000000&,&H00000000&,1,0,0,0,100,100,0,0,1,0,0,5,0,0,0,1
 Style: Box,{FONT_NAME},{FONT_SIZE},{COLOR_BOX},{COLOR_BOX},{COLOR_BOX},{COLOR_BOX},0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1
+Style: TextEn,{FONT_NAME},{EN_FONT_SIZE},{COLOR_EN_TEXT},{COLOR_EN_TEXT},{COLOR_EN_OUTLINE},&H00000000&,0,1,0,0,100,100,0,0,1,2,0,5,0,0,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     out = [header]
-    for u, start_ms, end_ms in timed_utts:
-        if end_ms <= start_ms:
-            end_ms = start_ms + 1000
-        lines = wrap_korean(u["text"])
+    # Pre-compute next anchor for English cue end (= next utt's source-video time)
+    anchors = [u.get("_anchor_start_ms", s) for u, s, _ in timed_utts]
+
+    def _emit_ko_cue(lines: list, c_start: int, c_end: int, color: str):
+        """Emit one KO subtitle cue (rounded box + text) for [c_start, c_end].
+        Always exactly 1 or 2 lines."""
         box_w, box_h = measure_lines(lines)
-        center_x = PLAY_RES_X / 2
-        box_bottom_y = PLAY_RES_Y - MARGIN_V
-        box_top_y = box_bottom_y - box_h
-        box_x = center_x - box_w / 2
-        text_center_y = box_top_y + box_h / 2
+        cx = PLAY_RES_X / 2
+        b_bot = PLAY_RES_Y - MARGIN_V
+        b_top = b_bot - box_h
+        b_left = cx - box_w / 2
+        t_cy = b_top + box_h / 2
         drawing = rounded_rect_drawing(box_w, box_h, BOX_RADIUS)
+        color_tag = f"\\1c{color}" if color != DEFAULT_TEXT_COLOR else ""
         out.append(
-            f"Dialogue: 0,{ms_to_ass_time(start_ms)},{ms_to_ass_time(end_ms)},Box,,0,0,0,,"
-            f"{{\\pos({box_x:.0f},{box_top_y:.0f})\\an7\\bord0\\shad0\\p1}}{drawing}{{\\p0}}\n"
+            f"Dialogue: 0,{ms_to_ass_time(c_start)},{ms_to_ass_time(c_end)},Box,,0,0,0,,"
+            f"{{\\pos({b_left:.0f},{b_top:.0f})\\an7\\bord0\\shad0\\p1}}{drawing}{{\\p0}}\n"
         )
         text = r"\N".join(lines)
         out.append(
-            f"Dialogue: 1,{ms_to_ass_time(start_ms)},{ms_to_ass_time(end_ms)},Text,,0,0,0,,"
-            f"{{\\pos({center_x:.0f},{text_center_y:.0f})\\an5}}{text}\n"
+            f"Dialogue: 1,{ms_to_ass_time(c_start)},{ms_to_ass_time(c_end)},Text,,0,0,0,,"
+            f"{{\\pos({cx:.0f},{t_cy:.0f})\\an5{color_tag}}}{text}\n"
         )
+
+    for idx, (u, start_ms, end_ms) in enumerate(timed_utts):
+        if end_ms <= start_ms:
+            end_ms = start_ms + 1000
+        lines = wrap_korean(u["text"])
+        spk = u.get("speaker")
+        color = spk_to_color.get(spk, DEFAULT_TEXT_COLOR)
+
+        # If KO needs >2 lines, split the time slot in half and show first
+        # half of lines in cue A, second half in cue B. Audio stays one
+        # continuous utterance; only the subtitle visually splits.
+        if len(lines) > MAX_LINES:
+            split_count = (len(lines) + MAX_LINES - 1) // MAX_LINES  # number of cue parts
+            chunk_size = (len(lines) + split_count - 1) // split_count
+            slot_ms = end_ms - start_ms
+            for part in range(split_count):
+                seg_start = start_ms + part * slot_ms // split_count
+                seg_end = start_ms + (part + 1) * slot_ms // split_count
+                if part == split_count - 1:
+                    seg_end = end_ms
+                seg_lines = lines[part * chunk_size : (part + 1) * chunk_size]
+                if not seg_lines:
+                    continue
+                _emit_ko_cue(seg_lines, seg_start, seg_end, color)
+        else:
+            _emit_ko_cue(lines, start_ms, end_ms, color)
+
+        # English secondary subtitle at FIXED top of frame. Uses ORIGINAL
+        # source-video timing (anchor) so it stays synced with the speaker's
+        # mouth in the picture, independent of the KO cue at the bottom.
+        en_text = u.get("text_en", "").strip()
+        if en_text:
+            en_start_ms = u.get("_anchor_start_ms", start_ms)
+            en_end_ms = anchors[idx + 1] if idx + 1 < len(anchors) else en_start_ms + 3000
+            if en_end_ms <= en_start_ms:
+                en_end_ms = en_start_ms + 1000
+            en_lines = wrap_english(en_text)
+            en_text_block = r"\N".join(en_lines)
+            en_color_tag = f"\\1c{color}" if color != DEFAULT_TEXT_COLOR else ""
+            en_cx = PLAY_RES_X / 2
+            # an8 = top-center alignment, so y = absolute distance from top
+            out.append(
+                f"Dialogue: 2,{ms_to_ass_time(en_start_ms)},{ms_to_ass_time(en_end_ms)},TextEn,,0,0,0,,"
+                f"{{\\pos({en_cx:.0f},{EN_FIXED_TOP_Y})\\an8{en_color_tag}}}{en_text_block}\n"
+            )
     return "".join(out)
+
+
+def wrap_english(text: str, max_per_line: int = EN_MAX_CHARS_PER_LINE):
+    """Greedy wrap by word, capped at 2 lines. Truncate the rest with ellipsis."""
+    text = text.strip()
+    if len(text) <= max_per_line:
+        return [text]
+    words = text.split(" ")
+    lines = []
+    current = []
+    for w in words:
+        candidate = " ".join(current + [w]) if current else w
+        if len(candidate) > max_per_line and current:
+            lines.append(" ".join(current))
+            current = [w]
+            if len(lines) >= MAX_LINES - 1:
+                # last line — fit what we can, ellipsis if overflowing
+                rest = words[words.index(w):]
+                last = " ".join(rest)
+                if len(last) > max_per_line:
+                    last = last[: max_per_line - 1].rsplit(" ", 1)[0] + "…"
+                lines.append(last)
+                return lines
+        else:
+            current.append(w)
+    if current:
+        lines.append(" ".join(current))
+    return lines
 
 
 def main():
@@ -294,11 +417,36 @@ def main():
     video_id = sys.argv[1]
     base = Path(f"output/{video_id}")
     utts = json.load(open(base / "3_translation" / "utterances.json"))
+
+    # Attach English source text for the bilingual subtitle.
+    # match_timing.py now stores text_en + sent_idx directly on each utterance,
+    # so this fallback only fires for older utterances.json files where those
+    # fields are missing.
+    if utts and "text_en" not in utts[0]:
+        sents_path = base / "3_translation" / "sentences.json"
+        if sents_path.exists():
+            sents = json.load(open(sents_path))
+            # Use sent_idx if present, else fall back to positional 1:1
+            for i, u in enumerate(utts):
+                idx = u.get("sent_idx", i)
+                if 0 <= idx < len(sents):
+                    u["text_en"] = sents[idx].get("en", "")
+
+    # speaker → color (voice-based, so same person across speaker_ids = same color)
+    spk_to_color = {}
+    speakers_path = base / "2_transcript" / "speakers.json"
+    if speakers_path.exists():
+        speakers = json.load(open(speakers_path))
+        spk_to_color = build_voice_color_map(speakers)
+
     timed = compute_audio_timing(utts, base)
     out = base / "6_final" / "subtitles.ass"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(build_ass(timed))
+    out.write_text(build_ass(timed, spk_to_color))
     print(f"[subtitle] {len(timed)} cues → {out}")
+    if spk_to_color:
+        unique_colors = set(spk_to_color.values())
+        print(f"[subtitle] {len(unique_colors)} distinct speaker colors applied")
 
 
 if __name__ == "__main__":

@@ -35,8 +35,22 @@ fi
 # venv python — explicit path is more reliable than `source activate` under set -e
 PY=.venv/bin/python
 
-# Speaker analysis (pitch → gender → voice) — runs once per video
+# Speaker diarization — pick the more accurate path if available.
+#   1. pyannote.audio (best accuracy, especially for same-gender speakers) if
+#      HF_TOKEN is set and pyannote is installed; auto-loads the token from
+#      ~/.config/secrets/huggingface.env if present.
+#   2. Fallback to pitch-based analyze_speakers.py (no extra deps).
+# Already-existing speakers.json is preserved either way.
 if [ ! -f "$BASE/2_transcript/speakers.json" ]; then
+  [ -z "${HF_TOKEN:-}" ] && [ -f ~/.config/secrets/huggingface.env ] && \
+    set -a && . ~/.config/secrets/huggingface.env && set +a
+  if [ -n "${HF_TOKEN:-}" ] && "$PY" -c "import pyannote.audio" 2>/dev/null; then
+    echo "[dub] using pyannote.audio for diarization"
+    "$PY" scripts/diarize_pyannote.py "$VIDEO_ID"
+  fi
+  # Always run analyze_speakers afterwards — it reads tokens.json (which
+  # diarize_pyannote may have rewritten) and produces the canonical
+  # speakers.json with voice assignments.
   "$PY" scripts/analyze_speakers.py "$VIDEO_ID"
 else
   echo "[dub] speakers exists, skip analyze"

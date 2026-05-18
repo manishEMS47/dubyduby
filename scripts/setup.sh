@@ -23,9 +23,10 @@ fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
 
-# 3. Python deps (supertonic includes onnxruntime / numpy / soundfile; librosa for pitch analysis)
-echo "[setup] installing supertonic + librosa..."
-uv pip install -q supertonic librosa
+# 3. Python deps (supertonic includes onnxruntime / numpy / soundfile;
+#    librosa for pitch analysis; pyannote.audio for accurate speaker diarization)
+echo "[setup] installing supertonic + librosa + pyannote.audio..."
+uv pip install -q supertonic librosa pyannote.audio
 
 # 4. Pretendard font (for subtitles) — extract TTF from release zip
 mkdir -p fonts
@@ -105,4 +106,29 @@ if [ -d .git ] || git rev-parse --git-dir >/dev/null 2>&1; then
 fi
 
 echo "[setup] ready. Supertonic model (~260MB) downloads on first synth (automatic)."
+
+# 8. pyannote diarization — optional but strongly recommended for accurate
+#    speaker separation on same-gender interviews. Requires a HuggingFace
+#    token (free) and one-time access grant on three model pages.
+if [ ! -f ~/.config/secrets/huggingface.env ]; then
+  cat <<'EOF'
+
+[setup] OPTIONAL: pyannote.audio is installed but needs a HuggingFace token
+        for the diarization models. Without it, dub.sh falls back to the
+        pitch-based analyzer (less accurate for same-gender speakers).
+
+        Setup (one-time, ~2 min):
+          1. https://huggingface.co/settings/tokens → create a 'read' token
+          2. Accept terms on all three model pages (same account):
+             - https://huggingface.co/pyannote/speaker-diarization-3.1
+             - https://huggingface.co/pyannote/segmentation-3.0
+             - https://huggingface.co/pyannote/speaker-diarization-community-1
+          3. Save the token:
+               mkdir -p ~/.config/secrets && chmod 700 ~/.config/secrets
+               echo "export HF_TOKEN='hf_xxx...'" > ~/.config/secrets/huggingface.env
+               chmod 600 ~/.config/secrets/huggingface.env
+
+EOF
+fi
+
 echo "[setup] next: bash scripts/dub.sh <youtube_url>"

@@ -44,6 +44,8 @@ def main():
             "end_ms": lt["end_ms"],
             "text": s["ko"],                       # subtitle display (e.g. "3.0")
             "tts_text": s.get("ko_tts", s["ko"]),  # synthesis input (e.g. "삼 점 영")
+            "text_en": s.get("en", ""),            # original English for bilingual subtitle
+            "sent_idx": si,                        # back-reference for downstream tools
             "language": "ko",
             "speaker": ft.get("speaker"),  # from Soniox diarization (None if disabled)
         })

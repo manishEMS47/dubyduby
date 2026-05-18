@@ -7,6 +7,10 @@ dubyduby itself is MIT-licensed (see [LICENSE](LICENSE)). It depends on the foll
 | Project | Role | License | Distributed by dubyduby? |
 |---|---|---|---|
 | [Supertonic](https://pypi.org/project/supertonic/) | Korean TTS engine (ONNX) | OpenRAIL-M (commercial + non-commercial OK, attribution recommended) | No — `pip install supertonic` on first setup |
+| [pyannote.audio](https://github.com/pyannote/pyannote-audio) | Speaker diarization (accurate same-gender separation) | MIT | No — `pip install pyannote.audio` on first setup; models pulled from HuggingFace at runtime |
+| [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) | Diarization pipeline weights | MIT | No — downloaded from HuggingFace on first run (HF token required) |
+| [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0) | Voice activity / segmentation weights (transitive dep) | MIT | No — downloaded from HuggingFace |
+| [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) | Embedding model used by diarization 3.1 | MIT | No — downloaded from HuggingFace |
 | [Soniox](https://soniox.com) | Speech-to-text API + speaker diarization | Commercial SaaS, BYOK | No — user supplies `SONIOX_API_KEY` |
 | [yt-dlp](https://github.com/yt-dlp/yt-dlp) | YouTube video/audio download | Unlicense (public domain) | No — binary downloaded by `setup.sh` to `binaries/yt-dlp` |
 | [Pretendard](https://github.com/orioncactus/pretendard) | Korean subtitle font (Bold weight) | SIL Open Font License 1.1 | No — font extracted at setup time to `fonts/` |
