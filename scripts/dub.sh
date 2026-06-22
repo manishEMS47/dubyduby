@@ -26,14 +26,26 @@ else
   echo "[dub] source exists, skip download"
 fi
 
+# venv python — explicit path is more reliable than `source activate` under set -e
+PY=.venv/bin/python
+
+# STT engine — selectable, defaults to Soniox so existing behavior is unchanged.
+#   soniox (default): transcribe.sh — async batch + diarization
+#   60db:             transcribe_60db.py — single /stt POST, adapted to the same
+#                     tokens.json schema (see scripts/transcribe_60db.py)
+# Both emit identical 2_transcript/{tokens.json, transcript.md}, so everything
+# downstream (diarization, match_timing, synth) is engine-agnostic.
 if [ ! -f "$BASE/2_transcript/tokens.json" ]; then
-  bash scripts/transcribe.sh "$VIDEO_ID"
+  STT_ENGINE="${DUBYDUBY_STT:-soniox}"
+  echo "[dub] STT engine: $STT_ENGINE"
+  case "$STT_ENGINE" in
+    soniox) bash scripts/transcribe.sh "$VIDEO_ID" ;;
+    60db)   "$PY" scripts/transcribe_60db.py "$VIDEO_ID" ;;
+    *) echo "Unknown DUBYDUBY_STT=$STT_ENGINE (use 'soniox' or '60db')" >&2; exit 1 ;;
+  esac
 else
   echo "[dub] transcript exists, skip transcribe"
 fi
-
-# venv python — explicit path is more reliable than `source activate` under set -e
-PY=.venv/bin/python
 
 # Speaker diarization — pick the more accurate path if available.
 #   1. pyannote.audio (best accuracy, especially for same-gender speakers) if

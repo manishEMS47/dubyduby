@@ -236,7 +236,9 @@ Voices: M1-M5, F1-F5. Preview: `samples/*.mp3` in this repo.
 
 ## Environment
 
-- `SONIOX_API_KEY` in `.env` (required; sign up at https://soniox.com — 200min/month free)
+- `SONIOX_API_KEY` in `.env` (required for default STT; sign up at https://soniox.com — 200min/month free)
+- `DUBYDUBY_STT` selects the STT engine: `soniox` (default) or `60db`. When `60db`, set `SIXTYDB_API_KEY` in `.env` (optional `DUBYDUBY_STT_LANG`, default `en`). Both engines write identical `2_transcript/{tokens.json, transcript.md}`, so translation + synthesis are unchanged. Note: 60db `/stt` caps uploads at 10MB/1h — long sources are auto re-encoded to fit; cut very long videos with `dub.sh <URL> <seconds>`.
+- 60db is STT-only here. TTS stays Supertonic (60db has no Korean voice).
 - No LLM API key needed — you (the agent) handle translation directly.
 
 ## First-time setup
